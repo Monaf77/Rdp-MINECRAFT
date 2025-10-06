@@ -6,7 +6,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 3600
     steps:
-      - name: Configure Core RDP Settings
+      - name: تكوين إعدادات RDP الأساسية
         run: |
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0 -Force
@@ -15,7 +15,7 @@ jobs:
           netsh advfirewall firewall add rule name="RDP-Tailscale" dir=in action=allow protocol=TCP localport=3389
           Restart-Service -Name TermService -Force
 
-      - name: Create RDP User with Static Password
+      - name: إنشاء مستخدم RDP بكلمة مرور ثابتة
         run: |
           $password = "admin@123"
           $securePass = ConvertTo-SecureString $password -AsPlainText -Force
@@ -30,21 +30,21 @@ jobs:
           echo "RDP_CREDS=User: TOOLBOXLAP | Password: $password" >> $env:GITHUB_ENV
 
           if (-not (Get-LocalUser -Name "TOOLBOXLAP")) {
-              Write-Error "User creation failed"
+              Write-Error "فشل إنشاء المستخدم"
               exit 1
           }
 
-     - name: Install Tailscale
-  shell: pwsh
-  run: |
-    $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
-    $installerPath = "$env:TEMP\\tailscale.msi"
+      - name: تثبيت Tailscale
+        shell: pwsh
+        run: |
+          $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
+          $installerPath = "$env:TEMP\tailscale.msi"
 
-    Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath
-    Start-Process msiexec.exe -ArgumentList "/i "$installerPath" /quiet /norestart" -Wait
-    Remove-Item $installerPath -Force
+          Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath
+          Start-Process -FilePath "msiexec.exe" -ArgumentList "/i `"$installerPath`" /quiet /norestart" -Wait
+          Remove-Item $installerPath -Force
 
-      - name: Establish Tailscale Connection
+      - name: إنشاء اتصال Tailscale
         run: |
           & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-$env:GITHUB_RUN_ID
           $tsIP = $null
@@ -55,29 +55,29 @@ jobs:
               $retries++
           }
           if (-not $tsIP) {
-              Write-Error "Tailscale IP not assigned. Exiting."
+              Write-Error "لم يتم تعيين عنوان IP لـ Tailscale. جارٍ الخروج..."
               exit 1
           }
           echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
 
-      - name: Verify RDP Accessibility
+      - name: التحقق من إمكانية الوصول إلى RDP
         run: |
-          Write-Host "Tailscale IP: $env:TAILSCALE_IP"
+          Write-Host "عنوان IP الخاص بـ Tailscale: $env:TAILSCALE_IP"
           $testResult = Test-NetConnection -ComputerName $env:TAILSCALE_IP -Port 3389
           if (-not $testResult.TcpTestSucceeded) {
-              Write-Error "TCP connection to RDP port 3389 failed"
+              Write-Error "فشل الاتصال TCP عبر منفذ RDP 3389"
               exit 1
           }
-          Write-Host "TCP connectivity successful!"
+          Write-Host "تم الاتصال بنجاح عبر TCP!"
 
-      - name: Maintain Connection
+      - name: الحفاظ على الاتصال
         run: |
-          Write-Host "`n=== RDP ACCESS ==="
-          Write-Host "Address: $env:TAILSCALE_IP"
-          Write-Host "Username: TOOLBOXLAP"
-          Write-Host "Password: admin@123"
+          Write-Host "`n=== وصول RDP ==="
+          Write-Host "العنوان: $env:TAILSCALE_IP"
+          Write-Host "اسم المستخدم: TOOLBOXLAP"
+          Write-Host "كلمة المرور: admin@123"
           Write-Host "==================`n"
           while ($true) {
-              Write-Host "[$(Get-Date)] RDP Active - Use Ctrl+C in workflow to terminate"
+              Write-Host "[$(Get-Date)] RDP نشط - استخدم Ctrl+C في سير العمل للإنهاء"
               Start-Sleep -Seconds 300
           }
