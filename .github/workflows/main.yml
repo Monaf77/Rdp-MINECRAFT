@@ -34,15 +34,30 @@ jobs:
               exit 1
           }
 
-      - name: تثبيت Tailscale
-        shell: pwsh
-        run: |
-          $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
-          $installerPath = "$env:TEMP\tailscale.msi"
+     - name: تثبيت Tailscale
+  shell: pwsh
+  run: |
+    # الحصول على أحدث إصدار من Tailscale
+    $latestVersion = (Invoke-RestMethod -Uri "https://pkgs.tailscale.com/stable/?mode=json" | Select-Object -First 1).version
+    $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-$latestVersion-amd64.msi"
+    $installerPath = "$env:TEMP\tailscale.msi"
 
-          Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath
-          Start-Process -FilePath "msiexec.exe" -ArgumentList "/i `"$installerPath`" /quiet /norestart" -Wait
-          Remove-Item $installerPath -Force
+    Write-Host "جاري تحميل Tailscale الإصدار: $latestVersion"
+    Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath
+    
+    # استخدام Start-Process مع صيغة مبسطة
+    $arguments = "/i `"$installerPath`" /quiet /norestart"
+    Start-Process "msiexec.exe" -ArgumentList $arguments -Wait -NoNewWindow
+    
+    # التأكد من التثبيت
+    if (Test-Path "$env:ProgramFiles\Tailscale\tailscale.exe") {
+        Write-Host "تم تثبيت Tailscale بنجاح"
+    } else {
+        Write-Error "فشل تثبيت Tailscale"
+        exit 1
+    }
+    
+    Remove-Item $installerPath -Force -ErrorAction SilentlyContinue
 
       - name: إنشاء اتصال Tailscale
         run: |
