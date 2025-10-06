@@ -1,65 +1,77 @@
 name: RDP
+
 on:
-  workflow_dispatch:
+  workflow_dispatch:  # تفعيل التشغيل اليدوي
+
 jobs:
   secure-rdp:
     runs-on: windows-latest
     timeout-minutes: 3600
+
     steps:
-      - name: تكوين إعدادات RDP الأساسية
+      - name: تكوين إعدادات RDP
         run: |
+          # تفعيل اتصالات RDP
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
+          # تعطيل المصادقة المطلوبة
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0 -Force
+          # تعطيل طبقة الأمان
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "SecurityLayer" -Value 0 -Force
+          # تكوين جدار الحماية
           netsh advfirewall firewall delete rule name="RDP-Tailscale"
           netsh advfirewall firewall add rule name="RDP-Tailscale" dir=in action=allow protocol=TCP localport=3389
+          # إعادة تشغيل خدمة RDP
           Restart-Service -Name TermService -Force
 
-      - name: إنشاء مستخدم RDP بكلمة مرور ثابتة
+      - name: إنشاء مستخدم RDP
         run: |
           $password = "admin@123"
           $securePass = ConvertTo-SecureString $password -AsPlainText -Force
 
+          # التحقق من وجود المستخدم وإنشاؤه إذا لم يكن موجوداً
           if (-not (Get-LocalUser -Name "TOOLBOXLAP" -ErrorAction SilentlyContinue)) {
               New-LocalUser -Name "TOOLBOXLAP" -Password $securePass -AccountNeverExpires
           }
 
+          # إضافة المستخدم إلى مجموعات الصلاحيات
           Add-LocalGroupMember -Group "Administrators" -Member "TOOLBOXLAP"
           Add-LocalGroupMember -Group "Remote Desktop Users" -Member "TOOLBOXLAP"
 
+          # تخزين بيانات الاعتماد كمتغيرات
           echo "RDP_CREDS=User: TOOLBOXLAP | Password: $password" >> $env:GITHUB_ENV
 
+          # التحقق من إنشاء المستخدم
           if (-not (Get-LocalUser -Name "TOOLBOXLAP")) {
               Write-Error "فشل إنشاء المستخدم"
               exit 1
           }
 
-     - name: تثبيت Tailscale
-  shell: pwsh
-  run: |
-    # الحصول على أحدث إصدار من Tailscale
-    $latestVersion = (Invoke-RestMethod -Uri "https://pkgs.tailscale.com/stable/?mode=json" | Select-Object -First 1).version
-    $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-$latestVersion-amd64.msi"
-    $installerPath = "$env:TEMP\tailscale.msi"
+      - name: تثبيت Tailscale
+        shell: pwsh
+        run: |
+          # الحصول على أحدث إصدار من Tailscale
+          $latestVersion = (Invoke-RestMethod -Uri "https://pkgs.tailscale.com/stable/?mode=json" | Select-Object -First 1).version
+          $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-$latestVersion-amd64.msi"
+          $installerPath = "$env:TEMP\tailscale.msi"
 
-    Write-Host "جاري تحميل Tailscale الإصدار: $latestVersion"
-    Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath
-    
-    # استخدام Start-Process مع صيغة مبسطة
-    $arguments = "/i `"$installerPath`" /quiet /norestart"
-    Start-Process "msiexec.exe" -ArgumentList $arguments -Wait -NoNewWindow
-    
-    # التأكد من التثبيت
-    if (Test-Path "$env:ProgramFiles\Tailscale\tailscale.exe") {
-        Write-Host "تم تثبيت Tailscale بنجاح"
-    } else {
-        Write-Error "فشل تثبيت Tailscale"
-        exit 1
-    }
-    
-    Remove-Item $installerPath -Force -ErrorAction SilentlyContinue
+          Write-Host "جاري تحميل Tailscale الإصدار: $latestVersion"
+          Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath
+          
+          # تثبيت Tailscale
+          $arguments = "/i `"$installerPath`" /quiet /norestart"
+          Start-Process "msiexec.exe" -ArgumentList $arguments -Wait -NoNewWindow
+          
+          # التحقق من التثبيت
+          if (Test-Path "$env:ProgramFiles\Tailscale\tailscale.exe") {
+              Write-Host "تم تثبيت Tailscale بنجاح"
+          } else {
+              Write-Error "فشل تثبيت Tailscale"
+              exit 1
+          }
+          
+          Remove-Item $installerPath -Force -ErrorAction SilentlyContinue
 
-      - name: إنشاء اتصال Tailscale
+      - name: تشغيل Tailscale
         run: |
           & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-$env:GITHUB_RUN_ID
           $tsIP = $null
@@ -70,29 +82,29 @@ jobs:
               $retries++
           }
           if (-not $tsIP) {
-              Write-Error "لم يتم تعيين عنوان IP لـ Tailscale. جارٍ الخروج..."
+              Write-Error "فشل الحصول على عنوان IP من Tailscale"
               exit 1
           }
           echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
 
-      - name: التحقق من إمكانية الوصول إلى RDP
+      - name: التحقق من اتصال RDP
         run: |
-          Write-Host "عنوان IP الخاص بـ Tailscale: $env:TAILSCALE_IP"
+          Write-Host "عنوان Tailscale: $env:TAILSCALE_IP"
           $testResult = Test-NetConnection -ComputerName $env:TAILSCALE_IP -Port 3389
           if (-not $testResult.TcpTestSucceeded) {
-              Write-Error "فشل الاتصال TCP عبر منفذ RDP 3389"
+              Write-Error "فشل الاتصال بمنفذ RDP 3389"
               exit 1
           }
-          Write-Host "تم الاتصال بنجاح عبر TCP!"
+          Write-Host "تم الاتصال بنجاح!"
 
-      - name: الحفاظ على الاتصال
+      - name: الحفاظ على الاتصال نشطاً
         run: |
-          Write-Host "`n=== وصول RDP ==="
+          Write-Host "`n=== معلومات اتصال RDP ==="
           Write-Host "العنوان: $env:TAILSCALE_IP"
           Write-Host "اسم المستخدم: TOOLBOXLAP"
           Write-Host "كلمة المرور: admin@123"
-          Write-Host "==================`n"
+          Write-Host "=========================`n"
           while ($true) {
-              Write-Host "[$(Get-Date)] RDP نشط - استخدم Ctrl+C في سير العمل للإنهاء"
+              Write-Host "[$(Get-Date)] الاتصال نشط - استخدم Ctrl+C في سير العمل لإنهاء الجلسة"
               Start-Sleep -Seconds 300
           }
