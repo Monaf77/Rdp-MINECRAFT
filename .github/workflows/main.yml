@@ -12,15 +12,10 @@ on:
         required: true
         default: 'admin@123'
 
-# قم بتعيين المهلة القصوى هنا
-defaults:
-  run:
-    shell: pwsh
-
 jobs:
   setup-rdp:
     runs-on: windows-latest
-    # استخدم القيمة الافتراضية 360 دقيقة (6 ساعات)
+    # تعيين المهلة القصوى إلى 6 ساعات (360 دقيقة)
     timeout-minutes: 360
     
     steps:
@@ -34,10 +29,11 @@ jobs:
         cache: 'npm'
 
     - name: Create web interface
+      shell: pwsh
       run: |
         # إنشاء مجلد التطبيق
-        mkdir rdp-web
-        cd rdp-web
+        New-Item -ItemType Directory -Path "rdp-web" -Force | Out-Null
+        Set-Location -Path "rdp-web"
         
         # إنشاء package.json
         @'
@@ -54,10 +50,10 @@ jobs:
             "body-parser": "^1.20.2"
           }
         }
-        '@ > package.json
+        '@ | Out-File -FilePath "package.json" -Encoding utf8
 
         # إنشاء مجلد public
-        mkdir public
+        New-Item -ItemType Directory -Path "public" -Force | Out-Null
 
         # إنشاء ملف server.js
         @'
@@ -69,14 +65,11 @@ jobs:
         const app = express();
         const PORT = 3000;
 
-        // Middleware
         app.use(bodyParser.json());
         app.use(express.static('public'));
 
-        // التوثيق
         const AUTH_TOKEN = process.env.AUTH_TOKEN || 'default-secure-token';
 
-        // التحقق من التوثيق
         const authenticate = (req, res, next) => {
             const token = req.headers.authorization;
             if (token !== `Bearer ${AUTH_TOKEN}`) {
@@ -85,7 +78,6 @@ jobs:
             next();
         };
 
-        // مسارات API
         app.post('/api/rdp/connect', authenticate, (req, res) => {
             const { host, username, password } = req.body;
             
@@ -112,16 +104,14 @@ jobs:
             });
         });
 
-        // خدمة الملفات الثابتة
         app.get('*', (req, res) => {
             res.sendFile(path.join(__dirname, 'public', 'index.html'));
         });
 
-        // بدء الخادم
         app.listen(PORT, '0.0.0.0', () => {
             console.log(`الخادم يعمل على المنفذ ${PORT}`);
         });
-        '@ > server.js
+        '@ | Out-File -FilePath "server.js" -Encoding utf8
 
         # إنشاء ملف index.html
         @'
@@ -269,19 +259,19 @@ jobs:
                     }
                 }
                 
-                // منع إرسال النموذج
                 document.getElementById('rdpForm').addEventListener('submit', (e) => {
                     e.preventDefault();
                 });
             </script>
         </body>
         </html>
-        '@ > public/index.html
+        '@ | Out-File -FilePath "public\index.html" -Encoding utf8
 
         # تثبيت الحزم
         npm install
 
     - name: تكوين RDP
+      shell: pwsh
       run: |
         # تفعيل RDP
         Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
@@ -291,13 +281,47 @@ jobs:
         # تكوين جدار الحماية
         netsh advfirewall firewall delete rule name="RDP" | Out-Null
         netsh advfirewall firewall add rule name="RDP" dir=in action=allow protocol=TCP localport=3389 | Out-Null
-        
-        # تمكين RDP في جدار الحماية
         Set-NetFirewallRule -DisplayGroup "Remote Desktop" -Enabled True -Profile Any
-        
-        # إعادة تشغيل خدمة RDP
         Restart-Service TermService -Force
 
     - name: إنشاء مستخدم RDP
+      shell: pwsh
       run: |
-        $password = "${{ github.event.inputs.password || 'admin@123' }
+        $password = "${{ github.event.inputs.password || 'admin@123' }"
+        $securePass = ConvertTo-SecureString $password -AsPlainText -Force
+
+        if (Get-LocalUser -Name "RDPUser" -ErrorAction SilentlyContinue) {
+            Remove-LocalUser -Name "RDPUser" -Confirm:$false
+        }
+
+        New-LocalUser -Name "RDPUser" -Password $securePass -AccountNeverExpires
+        Add-LocalGroupMember -Group "Administrators" -Member "RDPUser"
+        Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDPUser"
+        Enable-LocalUser -Name "RDPUser"
+
+        Write-Host "تم إنشاء المستخدم RDPUser بنجاح"
+        Write-Host "كلمة المرور: $password"
+
+    - name: تشغيل خادم الويب
+      shell: pwsh
+      run: |
+        Set-Location rdp-web
+        $env:AUTH_TOKEN = "default-secure-token"
+        Start-Process "node" -ArgumentList "server.js" -NoNewWindow
+        Start-Sleep -Seconds 2
+
+    - name: عرض معلومات الاتصال
+      shell: pwsh
+      run: |
+        $ip = (Get-NetIPAddress | Where-Object { $_.AddressFamily -eq 'IPv4' -and $_.PrefixOrigin -eq 'Dhcp' }).IPAddress
+        Write-Host "=============================================="
+        Write-Host "واجهة الويب متاحة على: http://$($ip):3000"
+        Write-Host "معلومات تسجيل الدخول:"
+        Write-Host "اسم المستخدم: RDPUser"
+        Write-Host "كلمة المرور: $($env:RDP_PASSWORD)"
+        Write-Host "=============================================="
+        
+        # انتظار حتى انتهاء المدة
+        $minutes = [int]${{ github.event.inputs.runtime_minutes || 360 }}
+        $seconds = $minutes * 60
+        Start-Sleep -Seconds $seconds
