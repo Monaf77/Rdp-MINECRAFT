@@ -11,11 +11,17 @@ on:
         description: 'كلمة مرور RDP'
         required: true
         default: 'admin@123'
- 
+
+# قم بتعيين المهلة القصوى هنا
+defaults:
+  run:
+    shell: pwsh
+
 jobs:
   setup-rdp:
     runs-on: windows-latest
-    timeout-minutes: ${{ github.event.inputs.runtime_minutes || 360 }}
+    # استخدم القيمة الافتراضية 360 دقيقة (6 ساعات)
+    timeout-minutes: 360
     
     steps:
     - name: Checkout code
@@ -113,7 +119,7 @@ jobs:
 
         // بدء الخادم
         app.listen(PORT, '0.0.0.0', () => {
-            console.log(الخادم يعمل على المنفذ ${PORT});
+            console.log(`الخادم يعمل على المنفذ ${PORT}`);
         });
         '@ > server.js
 
@@ -215,7 +221,7 @@ jobs:
                             throw new Error(data.error || 'فشل الاتصال');
                         }
                     } catch (error) {
-                        showStatus(خطأ: ${error.message}, 'danger');
+                        showStatus(`خطأ: ${error.message}`, 'danger');
                         toggleButtons(true);
                     }
                 });
@@ -243,7 +249,7 @@ jobs:
                             throw new Error(data.error || 'فشل قطع الاتصال');
                         }
                     } catch (error) {
-                        showStatus(خطأ: ${error.message}, 'danger');
+                        showStatus(`خطأ: ${error.message}`, 'danger');
                     } finally {
                         toggleButtons(true);
                     }
@@ -294,42 +300,4 @@ jobs:
 
     - name: إنشاء مستخدم RDP
       run: |
-        $password = "${{ github.event.inputs.password || 'admin@123' }}"
-        $securePass = ConvertTo-SecureString $password -AsPlainText -Force
-
-        # حذف المستخدم إذا كان موجوداً
-        if (Get-LocalUser -Name "RDPUser" -ErrorAction SilentlyContinue) {
-            Remove-LocalUser -Name "RDPUser" -Confirm:$false
-        }
-
-        # إنشاء مستخدم جديد
-        New-LocalUser -Name "RDPUser" -Password $securePass -AccountNeverExpires
-        Add-LocalGroupMember -Group "Administrators" -Member "RDPUser"
-        Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDPUser"
-        Enable-LocalUser -Name "RDPUser"
-
-        Write-Host "تم إنشاء المستخدم RDPUser بنجاح"
-        Write-Host "كلمة المرور: $password"
-
-    - name: تشغيل خادم الويب
-      run: |
-        cd rdp-web
-        $env:AUTH_TOKEN = "default-secure-token"
-        Start-Process "node" -ArgumentList "server.js" -NoNewWindow
-        Start-Sleep -Seconds 2
-
-    - name: عرض معلومات الاتصال
-      run: |
-        $ip = (Get-NetIPAddress | Where-Object { $_.AddressFamily -eq 'IPv4' -and $_.PrefixOrigin -eq 'Dhcp' }).IPAddress
-        Write-Host "=============================================="
-        Write-Host "واجهة الويب متاحة على: http://$($ip):3000"
-        Write-Host "معلومات تسجيل الدخول:"
-        Write-Host "اسم المستخدم: RDPUser"
-        Write-Host "كلمة المرور: ${{ github.event.inputs.password || 'admin@123' }}"
-        Write-Host "=============================================="
-        
-        # الحفاظ على تشغيل Workflow
-        Write-Host "سيتم إيقاف Workflow بعد ${{ github.event.inputs.runtime_minutes || 360 }} دقيقة"
-        $minutes = ${{ github.event.inputs.runtime_minutes || 360 }}
-        $seconds = $minutes * 60
-        Start-Sleep -Seconds $seconds
+        $password = "${{ github.event.inputs.password || 'admin@123' }
