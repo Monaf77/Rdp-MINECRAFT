@@ -1,103 +1,335 @@
-name: RDP
+name: RDP Web Interface
 
 on:
   workflow_dispatch:
+    inputs:
+      runtime_minutes:
+        description: 'مدة التشغيل (بالدقائق)'
+        required: true
+        default: '360'
+      password:
+        description: 'كلمة مرور RDP'
+        required: true
+        default: 'admin@123'
 
 jobs:
-  secure-rdp:
+  setup-rdp:
     runs-on: windows-latest
-    timeout-minutes: 3600
-
+    timeout-minutes: ${{ github.event.inputs.runtime_minutes || 360 }}
+    
     steps:
-      - name: Configure Core RDP Settings
-        run: |
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0 -Force
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "SecurityLayer" -Value 0 -Force
-          netsh advfirewall firewall delete rule name="RDP-Tailscale" | Out-Null
-          netsh advfirewall firewall add rule name="RDP-Tailscale" dir=in action=allow protocol=TCP localport=3389 | Out-Null
-          Restart-Service -Name TermService -Force
+    - name: Checkout code
+      uses: actions/checkout@v3
 
-      - name: Create RDP User with Static Password
-        run: |
-          $password = "admin@123"
-          $securePass = ConvertTo-SecureString $password -AsPlainText -Force
+    - name: Set up Node.js
+      uses: actions/setup-node@v3
+      with:
+        node-version: '16.x'
+        cache: 'npm'
 
-          if (Get-LocalUser -Name "TOOLBOXLAP" -ErrorAction SilentlyContinue) {
-              Remove-LocalUser -Name "TOOLBOXLAP" -Confirm:$false
+    - name: Create web interface
+      run: |
+        # إنشاء مجلد التطبيق
+        mkdir rdp-web
+        cd rdp-web
+        
+        # إنشاء package.json
+        @'
+        {
+          "name": "rdp-web-interface",
+          "version": "1.0.0",
+          "description": "واجهة ويب للتحكم في RDP",
+          "main": "server.js",
+          "scripts": {
+            "start": "node server.js"
+          },
+          "dependencies": {
+            "express": "^4.18.2",
+            "body-parser": "^1.20.2"
           }
+        }
+        '@ > package.json
 
-          New-LocalUser -Name "TOOLBOXLAP" -Password $securePass -AccountNeverExpires
-          Add-LocalGroupMember -Group "Administrators" -Member "TOOLBOXLAP"
-          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "TOOLBOXLAP"
-          Enable-LocalUser -Name "TOOLBOXLAP"
+        # إنشاء مجلد public
+        mkdir public
 
-          echo "RDP_CREDS=User: TOOLBOXLAP | Password: $password" >> $env:GITHUB_ENV
+        # إنشاء ملف server.js
+        @'
+        const express = require('express');
+        const bodyParser = require('body-parser');
+        const { exec } = require('child_process');
+        const path = require('path');
 
-      - name: Install Tailscale
-        run: |
-          $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi"
-          $installerPath = "$env:TEMP\tailscale.msi"
+        const app = express();
+        const PORT = 3000;
 
-          Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath -UseBasicParsing
-          $process = Start-Process "msiexec.exe" -ArgumentList "/i `"$installerPath`" /quiet /norestart" -Wait -PassThru -NoNewWindow
-          
-          if ($process.ExitCode -ne 0) {
-              Write-Error "Installation failed with exit code: $($process.ExitCode)"
-              exit 1
-          }
-          
-          Remove-Item $installerPath -Force -ErrorAction SilentlyContinue
+        // Middleware
+        app.use(bodyParser.json());
+        app.use(express.static('public'));
 
-      - name: Establish Tailscale Connection
-        run: |
-          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-$env:GITHUB_RUN_ID --reset
-          $tsIP = $null
-          $retries = 0
-          $maxRetries = 10
-          
-          while (-not $tsIP -and $retries -lt $maxRetries) {
-              $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
-              if (-not $tsIP) { $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -6 }
-              if (-not $tsIP) {
-                  $retries++
-                  Start-Sleep -Seconds 5
-              }
-          }
-          
-          if (-not $tsIP) {
-              Write-Error "Tailscale IP not assigned after $maxRetries attempts"
-              exit 1
-          }
-          
-          echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
-          Write-Host "Tailscale IP: $tsIP"
+        // التوثيق
+        const AUTH_TOKEN = process.env.AUTH_TOKEN || 'default-secure-token';
 
-      - name: Verify RDP Accessibility
-        run: |
-          $tsIP = $env:TAILSCALE_IP
-          Write-Host "Verifying RDP access to $tsIP..."
-          
-          $testResult = Test-NetConnection -ComputerName $tsIP -Port 3389 -WarningAction SilentlyContinue
-          if ($testResult.TcpTestSucceeded) {
-              Write-Host "✅ RDP is accessible at $tsIP" -ForegroundColor Green
-          } else {
-              Write-Error "❌ RDP connection test failed"
-              exit 1
-          }
+        // التحقق من التوثيق
+        const authenticate = (req, res, next) => {
+            const token = req.headers.authorization;
+            if (token !== `Bearer ${AUTH_TOKEN}`) {
+                return res.status(401).json({ error: 'غير مصرح' });
+            }
+            next();
+        };
 
-      - name: Maintain Connection
-        run: |
-          $tsIP = $env:TAILSCALE_IP
-          Write-Host "`n=== RDP ACCESS INFORMATION ==="
-          Write-Host "Address: $tsIP"
-          Write-Host "Username: TOOLBOXLAP"
-          Write-Host "Password: admin@123"
-          Write-Host "============================"
-          
-          while ($true) {
-              $connectionTest = Test-NetConnection -ComputerName $tsIP -Port 3389 -WarningAction SilentlyContinue
-              $status = if ($connectionTest.TcpTestSucceeded) { "✅ Active" } else { "❌ Disconnected" }
-              Write-Host "[$(Get-Date -Format 'HH:mm:ss')] RDP $status - $tsIP"
-              Start-Sleep -Seconds 30
-          }
+        // مسارات API
+        app.post('/api/rdp/connect', authenticate, (req, res) => {
+            const { host, username, password } = req.body;
+            
+            if (!host || !username || !password) {
+                return res.status(400).json({ error: 'جميع الحقول مطلوبة' });
+            }
+
+            const command = `cmdkey /generic:${host} /user:${username} /pass:${password} && start mstsc /v:${host}`;
+            
+            exec(command, (error) => {
+                if (error) {
+                    return res.status(500).json({ error: 'فشل الاتصال بـ RDP' });
+                }
+                res.json({ message: 'تم بدء اتصال RDP بنجاح' });
+            });
+        });
+
+        app.post('/api/rdp/disconnect', authenticate, (req, res) => {
+            exec('taskkill /F /IM mstsc.exe', (error) => {
+                if (error) {
+                    return res.status(500).json({ error: 'فشل إغلاق اتصال RDP' });
+                }
+                res.json({ message: 'تم قطع اتصال RDP بنجاح' });
+            });
+        });
+
+        // خدمة الملفات الثابتة
+        app.get('*', (req, res) => {
+            res.sendFile(path.join(__dirname, 'public', 'index.html'));
+        });
+
+        // بدء الخادم
+        app.listen(PORT, '0.0.0.0', () => {
+            console.log(الخادم يعمل على المنفذ ${PORT});
+        });
+        '@ > server.js
+
+        # إنشاء ملف index.html
+        @'
+        <!DOCTYPE html>
+        <html lang="ar" dir="rtl">
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>لوحة تحكم RDP</title>
+            <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.rtl.min.css" rel="stylesheet">
+            <style>
+                body { background-color: #f8f9fa; font-family: 'Segoe UI', Tahoma, sans-serif; }
+                .card { border-radius: 15px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+                .card-header { background-color: #0d6efd; color: white; border-radius: 15px 15px 0 0 !important; }
+                .btn-primary { background-color: #0d6efd; border: none; padding: 10px 25px; }
+                .btn-danger { padding: 10px 25px; }
+                .status { transition: all 0.3s ease; }
+            </style>
+        </head>
+        <body>
+            <div class="container mt-5">
+                <div class="row justify-content-center">
+                    <div class="col-md-6">
+                        <div class="card">
+                            <div class="card-header text-center">
+                                <h3>لوحة تحكم اتصال RDP</h3>
+                            </div>
+                            <div class="card-body">
+                                <form id="rdpForm">
+                                    <div class="mb-3">
+                                        <label class="form-label">عنوان الخادم (IP)</label>
+                                        <input type="text" class="form-control" id="host" required 
+                                               placeholder="مثال: 192.168.1.100">
+                                    </div>
+                                    <div class="mb-3">
+                                        <label class="form-label">اسم المستخدم</label>
+                                        <input type="text" class="form-control" id="username" required
+                                               placeholder="أدخل اسم المستخدم">
+                                    </div>
+                                    <div class="mb-3">
+                                        <label class="form-label">كلمة المرور</label>
+                                        <input type="password" class="form-control" id="password" required
+                                               placeholder="أدخل كلمة المرور">
+                                    </div>
+                                    
+                                    <div class="d-grid gap-2">
+                                        <button type="button" id="connectBtn" class="btn btn-primary">
+                                            اتصل
+                                        </button>
+                                        <button type="button" id="disconnectBtn" class="btn btn-danger" disabled>
+                                            قطع الاتصال
+                                        </button>
+                                    </div>
+                                    
+                                    <div id="status" class="mt-3 alert" style="display: none;"></div>
+                                </form>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <script>
+                const AUTH_TOKEN = 'default-secure-token';
+                
+                document.getElementById('connectBtn').addEventListener('click', async () => {
+                    const host = document.getElementById('host').value.trim();
+                    const username = document.getElementById('username').value.trim();
+                    const password = document.getElementById('password').value;
+                    const status = document.getElementById('status');
+                    
+                    if (!host || !username || !password) {
+                        showStatus('الرجاء ملء جميع الحقول', 'danger');
+                        return;
+                    }
+                    
+                    toggleButtons(false);
+                    showStatus('جاري الاتصال...', 'info');
+                    
+                    try {
+                        const response = await fetch('/api/rdp/connect', {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json',
+                                'Authorization': `Bearer ${AUTH_TOKEN}`
+                            },
+                            body: JSON.stringify({ host, username, password })
+                        });
+                        
+                        const data = await response.json();
+                        
+                        if (response.ok) {
+                            showStatus('تم الاتصال بنجاح!', 'success');
+                            document.getElementById('connectBtn').disabled = true;
+                            document.getElementById('disconnectBtn').disabled = false;
+                        } else {
+                            throw new Error(data.error || 'فشل الاتصال');
+                        }
+                    } catch (error) {
+                        showStatus(خطأ: ${error.message}, 'danger');
+                        toggleButtons(true);
+                    }
+                });
+                
+                document.getElementById('disconnectBtn').addEventListener('click', async () => {
+                    const status = document.getElementById('status');
+                    toggleButtons(false);
+                    showStatus('جاري قطع الاتصال...', 'info');
+                    
+                    try {
+                        const response = await fetch('/api/rdp/disconnect', {
+                            method: 'POST',
+                            headers: {
+                                'Authorization': `Bearer ${AUTH_TOKEN}`
+                            }
+                        });
+                        
+                        const data = await response.json();
+                        
+                        if (response.ok) {
+                            showStatus('تم قطع الاتصال بنجاح', 'success');
+                            document.getElementById('connectBtn').disabled = false;
+                            document.getElementById('disconnectBtn').disabled = true;
+                        } else {
+                            throw new Error(data.error || 'فشل قطع الاتصال');
+                        }
+                    } catch (error) {
+                        showStatus(خطأ: ${error.message}, 'danger');
+                    } finally {
+                        toggleButtons(true);
+                    }
+                });
+                
+                function showStatus(message, type) {
+                    const status = document.getElementById('status');
+                    status.textContent = message;
+                    status.className = `mt-3 alert alert-${type}`;
+                    status.style.display = 'block';
+                }
+                
+                function toggleButtons(enable) {
+                    document.getElementById('connectBtn').disabled = !enable;
+                    if (enable) {
+                        document.getElementById('disconnectBtn').disabled = !document.getElementById('connectBtn').disabled;
+                    }
+                }
+                
+                // منع إرسال النموذج
+                document.getElementById('rdpForm').addEventListener('submit', (e) => {
+                    e.preventDefault();
+                });
+            </script>
+        </body>
+        </html>
+        '@ > public/index.html
+
+        # تثبيت الحزم
+        npm install
+
+    - name: تكوين RDP
+      run: |
+        # تفعيل RDP
+        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
+        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0 -Force
+        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "SecurityLayer" -Value 0 -Force
+        
+        # تكوين جدار الحماية
+        netsh advfirewall firewall delete rule name="RDP" | Out-Null
+        netsh advfirewall firewall add rule name="RDP" dir=in action=allow protocol=TCP localport=3389 | Out-Null
+        
+        # تمكين RDP في جدار الحماية
+        Set-NetFirewallRule -DisplayGroup "Remote Desktop" -Enabled True -Profile Any
+        
+        # إعادة تشغيل خدمة RDP
+        Restart-Service TermService -Force
+
+    - name: إنشاء مستخدم RDP
+      run: |
+        $password = "${{ github.event.inputs.password || 'admin@123' }}"
+        $securePass = ConvertTo-SecureString $password -AsPlainText -Force
+
+        # حذف المستخدم إذا كان موجوداً
+        if (Get-LocalUser -Name "RDPUser" -ErrorAction SilentlyContinue) {
+            Remove-LocalUser -Name "RDPUser" -Confirm:$false
+        }
+
+        # إنشاء مستخدم جديد
+        New-LocalUser -Name "RDPUser" -Password $securePass -AccountNeverExpires
+        Add-LocalGroupMember -Group "Administrators" -Member "RDPUser"
+        Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDPUser"
+        Enable-LocalUser -Name "RDPUser"
+
+        Write-Host "تم إنشاء المستخدم RDPUser بنجاح"
+        Write-Host "كلمة المرور: $password"
+
+    - name: تشغيل خادم الويب
+      run: |
+        cd rdp-web
+        $env:AUTH_TOKEN = "default-secure-token"
+        Start-Process "node" -ArgumentList "server.js" -NoNewWindow
+        Start-Sleep -Seconds 2
+
+    - name: عرض معلومات الاتصال
+      run: |
+        $ip = (Get-NetIPAddress | Where-Object { $_.AddressFamily -eq 'IPv4' -and $_.PrefixOrigin -eq 'Dhcp' }).IPAddress
+        Write-Host "=============================================="
+        Write-Host "واجهة الويب متاحة على: http://$($ip):3000"
+        Write-Host "معلومات تسجيل الدخول:"
+        Write-Host "اسم المستخدم: RDPUser"
+        Write-Host "كلمة المرور: ${{ github.event.inputs.password || 'admin@123' }}"
+        Write-Host "=============================================="
+        
+        # الحفاظ على تشغيل Workflow
+        Write-Host "سيتم إيقاف Workflow بعد ${{ github.event.inputs.runtime_minutes || 360 }} دقيقة"
+        $minutes = ${{ github.event.inputs.runtime_minutes || 360 }}
+        $seconds = $minutes * 60
+        Start-Sleep -Seconds $seconds
