@@ -34,7 +34,7 @@ jobs:
               exit 1
           }
 
-      - name: تثبيت Tailscale
+          - name: تثبيت Tailscale
         shell: pwsh
         run: |
           # تنزيل Tailscale
@@ -57,6 +57,66 @@ jobs:
           
           # تنظيف
           Remove-Item $installerPath -Force -ErrorAction SilentlyContinue
+
+      - name: تكوين Tailscale
+        run: |
+          # إضافة المسار إلى متغيرات النظام
+          $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine")
+          
+          # تشغيل Tailscale
+          Write-Host "جاري تشغيل Tailscale..."
+          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-$env:GITHUB_RUN_ID --reset
+          
+          # الحصول على عنوان IP
+          $tsIP = $null
+          $retries = 0
+          $maxRetries = 10
+          
+          while (-not $tsIP -and $retries -lt $maxRetries) {
+              $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
+              if (-not $tsIP) { $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -6 }
+              
+              if (-not $tsIP) {
+                  $retries++
+                  Write-Host "⏳ انتظار عنوان IP... ($retries/$maxRetries)"
+                  Start-Sleep -Seconds 5
+              }
+          }
+          
+          if (-not $tsIP) {
+              Write-Error "❌ فشل الحصول على عنوان IP"
+              exit 1
+          }
+          
+          echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
+          Write-Host "✅ عنوان Tailscale: $tsIP"
+
+      - name: التحقق من الاتصال
+        run: |
+          $tsIP = $env:TAILSCALE_IP
+          Write-Host "`n=== فحص الاتصال ==="
+          
+          # فحص Ping
+          Write-Host "`nجاري فحص اتصال Ping..."
+          ping -n 3 $tsIP
+          
+          # فحص منفذ RDP
+          Write-Host "`nجاري فحص منفذ RDP..."
+          $tcpClient = New-Object System.Net.Sockets.TCPClient
+          try {
+              $connect = $tcpClient.BeginConnect($tsIP, 3389, $null, $null)
+              $success = $connect.AsyncWaitHandle.WaitOne(5000, $false)
+              if ($success) {
+                  Write-Host "✅ منفذ RDP مفتوح" -ForegroundColor Green
+                  $tcpClient.EndConnect($connect)
+              } else {
+                  Write-Host "❌ فشل الاتصال" -ForegroundColor Red
+              }
+          } catch {
+              Write-Host "❌ خطأ: $_" -ForegroundColor Red
+          } finally {
+              $tcpClient.Dispose()
+          }
 
 
       - name: Verify RDP Accessibility
