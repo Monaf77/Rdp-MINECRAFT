@@ -34,41 +34,20 @@ jobs:
               exit 1
           }
 
-      - name: تثبيت Tailscale
+     - name: Install Tailscale
   run: |
     $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi"
     $installerPath = "$env:TEMP\tailscale.msi"
 
-    # تحميل Tailscale
-    Write-Host "جاري تحميل Tailscale..."
-    try {
-        Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath -UseBasicParsing
-        Write-Host "✅ تم التحميل بنجاح" -ForegroundColor Green
-    } catch {
-        Write-Error "❌ فشل التحميل: $_"
+    Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath -UseBasicParsing
+    $process = Start-Process "msiexec.exe" -ArgumentList "/i `"$installerPath`" /quiet /norestart" -Wait -PassThru -NoNewWindow
+    
+    if ($process.ExitCode -ne 0) {
+        Write-Error "Installation failed with exit code: $($process.ExitCode)"
         exit 1
     }
-
-    # تثبيت Tailscale
-    Write-Host "جاري التثبيت..."
-    try {
-        $process = Start-Process -FilePath "msiexec.exe" -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait -PassThru -NoNewWindow
-        
-        if ($process.ExitCode -eq 0) {
-            Write-Host "✅ تم التثبيت بنجاح" -ForegroundColor Green
-        } else {
-            Write-Error "❌ فشل التثبيت. كود الخروج: $($process.ExitCode)"
-            exit 1
-        }
-    } catch {
-        Write-Error "❌ حدث خطأ أثناء التثبيت: $_"
-        exit 1
-    } finally {
-        # تنظيف ملف التثبيت
-        if (Test-Path $installerPath) {
-            Remove-Item $installerPath -Force
-        }
-    }
+    
+    Remove-Item $installerPath -Force -ErrorAction SilentlyContinue
 
       - name: Establish Tailscale Connection
         run: |
