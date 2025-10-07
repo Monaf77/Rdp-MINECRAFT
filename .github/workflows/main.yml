@@ -1,7 +1,7 @@
 name: RDP
 
 on:
-  workflow_dispatch:  # تفعيل التشغيل اليدوي
+  workflow_dispatch:
 
 jobs:
   secure-rdp:
@@ -11,37 +11,30 @@ jobs:
     steps:
       - name: تكوين إعدادات RDP
         run: |
-          # تفعيل اتصالات RDP
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
-          # تعطيل المصادقة المطلوبة
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0 -Force
-          # تعطيل طبقة الأمان
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "SecurityLayer" -Value 0 -Force
-          # تكوين جدار الحماية
+          Set-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services' -Name "fAllowUnsolicited" -Value 1 -ErrorAction SilentlyContinue
+          Set-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services' -Name "fAllowUnsolicitedFull" -Value 1 -ErrorAction SilentlyContinue
           netsh advfirewall firewall delete rule name="RDP-Tailscale"
           netsh advfirewall firewall add rule name="RDP-Tailscale" dir=in action=allow protocol=TCP localport=3389
-          # إعادة تشغيل خدمة RDP
           Restart-Service -Name TermService -Force
 
       - name: إنشاء مستخدم RDP
         run: |
-          $password = "admin@123"
+          $password = "MONAFali12"
           $securePass = ConvertTo-SecureString $password -AsPlainText -Force
 
-          # التحقق من وجود المستخدم وإنشاؤه إذا لم يكن موجوداً
-          if (-not (Get-LocalUser -Name "TOOLBOXLAP" -ErrorAction SilentlyContinue)) {
-              New-LocalUser -Name "TOOLBOXLAP" -Password $securePass -AccountNeverExpires
+          if (-not (Get-LocalUser -Name "MONAF" -ErrorAction SilentlyContinue)) {
+              New-LocalUser -Name "MONAF" -Password $securePass -AccountNeverExpires
           }
 
-          # إضافة المستخدم إلى مجموعات الصلاحيات
-          Add-LocalGroupMember -Group "Administrators" -Member "TOOLBOXLAP"
-          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "TOOLBOXLAP"
+          Add-LocalGroupMember -Group "Administrators" -Member "MONAF"
+          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "MONAF"
 
-          # تخزين بيانات الاعتماد كمتغيرات
-          echo "RDP_CREDS=User: TOOLBOXLAP | Password: $password" >> $env:GITHUB_ENV
+          echo "RDP_CREDS=User: MONAF | Password: $password" >> $env:GITHUB_ENV
 
-          # التحقق من إنشاء المستخدم
-          if (-not (Get-LocalUser -Name "TOOLBOXLAP")) {
+          if (-not (Get-LocalUser -Name "MONAF")) {
               Write-Error "فشل إنشاء المستخدم"
               exit 1
           }
@@ -49,7 +42,6 @@ jobs:
       - name: تثبيت Tailscale
         shell: pwsh
         run: |
-          # الحصول على أحدث إصدار من Tailscale
           $latestVersion = (Invoke-RestMethod -Uri "https://pkgs.tailscale.com/stable/?mode=json" | Select-Object -First 1).version
           $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-$latestVersion-amd64.msi"
           $installerPath = "$env:TEMP\tailscale.msi"
@@ -57,11 +49,9 @@ jobs:
           Write-Host "جاري تحميل Tailscale الإصدار: $latestVersion"
           Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath
           
-          # تثبيت Tailscale
           $arguments = "/i `"$installerPath`" /quiet /norestart"
           Start-Process "msiexec.exe" -ArgumentList $arguments -Wait -NoNewWindow
           
-          # التحقق من التثبيت
           if (Test-Path "$env:ProgramFiles\Tailscale\tailscale.exe") {
               Write-Host "تم تثبيت Tailscale بنجاح"
           } else {
@@ -87,22 +77,31 @@ jobs:
           }
           echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
 
-      - name: التحقق من اتصال RDP
+      - name: فحص اتصال RDP
         run: |
-          Write-Host "عنوان Tailscale: $env:TAILSCALE_IP"
-          $testResult = Test-NetConnection -ComputerName $env:TAILSCALE_IP -Port 3389
-          if (-not $testResult.TcpTestSucceeded) {
-              Write-Error "فشل الاتصال بمنفذ RDP 3389"
-              exit 1
-          }
-          Write-Host "تم الاتصال بنجاح!"
+          Write-Host "=== فحص الاتصال ==="
+          Write-Host "عنوان IP: $env:TAILSCALE_IP"
+          
+          Write-Host "`nجاري فحص اتصال Ping..."
+          ping -n 3 $env:TAILSCALE_IP
+          
+          Write-Host "`nجاري فحص منفذ RDP (3389)..."
+          Test-NetConnection -ComputerName $env:TAILSCALE_IP -Port 3389 -InformationLevel Detailed
+          
+          Write-Host "`nالاتصالات النشطة على منفذ 3389:"
+          netstat -ano | findstr 3389
+          
+          Write-Host "`nحالة RDP:"
+          qwinsta
+          
+          Write-Host "`nانتهى الفحص. إذا لم تنجح العملية، يرجى مراجعة السجلات أعلاه."
 
-      - name: الحفاظ على الاتصال نشطاً
+      - name: الحفاظ على الاتصال
         run: |
           Write-Host "`n=== معلومات اتصال RDP ==="
           Write-Host "العنوان: $env:TAILSCALE_IP"
-          Write-Host "اسم المستخدم: TOOLBOXLAP"
-          Write-Host "كلمة المرور: admin@123"
+          Write-Host "اسم المستخدم: MONAF"
+          Write-Host "كلمة المرور: MONAFali12"
           Write-Host "=========================`n"
           while ($true) {
               Write-Host "[$(Get-Date)] الاتصال نشط - استخدم Ctrl+C في سير العمل لإنهاء الجلسة"
