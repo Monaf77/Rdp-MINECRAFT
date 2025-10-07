@@ -54,7 +54,6 @@ jobs:
               Write-Error "❌ فشل التثبيت. كود الخروج: $($process.ExitCode)"
               exit 1
           }
-          
           # تنظيف
           Remove-Item $installerPath -Force -ErrorAction SilentlyContinue
 
