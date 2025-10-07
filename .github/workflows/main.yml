@@ -34,14 +34,64 @@ jobs:
               exit 1
           }
 
-      - name: Install Tailscale
+        name: تثبيت Tailscale
+        shell: pwsh
         run: |
-          $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
+          # تنزيل Tailscale
+          $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi"
           $installerPath = "$env:TEMP\tailscale.msi"
+          
+          Write-Host "جاري تحميل Tailscale..."
+          Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath -UseBasicParsing
+          
+          # تثبيت Tailscale
+          Write-Host "جاري التثبيت..."
+          $process = Start-Process -FilePath "msiexec.exe" -ArgumentList "/i", ""$installerPath"", "/quiet", "/norestart" -Wait -PassThru -NoNewWindow
+          
+          if ($process.ExitCode -eq 0) {
+              Write-Host "✅ تم تثبيت Tailscale بنجاح"
+          } else {
+              Write-Error "❌ فشل التثبيت. كود الخروج: $($process.ExitCode)"
+              exit 1
+          }
+          
+          # تنظيف
+          Remove-Item $installerPath -Force -ErrorAction SilentlyContinue
 
-          Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath
-          Start-Process msiexec.exe -ArgumentList "/i", ""$installerPath"", "/quiet", "/norestart" -Wait
-          Remove-Item $installerPath -Force
+      - name: تكوين Tailscale
+        run: |
+          # إضافة المسار إلى متغيرات النظام
+          $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine")
+          
+          # تشغيل Tailscale
+          Write-Host "جاري تشغيل Tailscale..."
+          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-$env:GITHUB_RUN_ID --reset
+          
+          # الحصول على عنوان IP
+          $tsIP = $null
+          $retries = 0
+          $maxRetries = 10
+          
+          while (-not $tsIP -and $retries -lt $maxRetries) {
+              $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
+              if (-not $tsIP) { $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -6 }
+              
+              if (-not $tsIP) {
+                  $retries++
+                  Write-Host "⏳ انتظار عنوان IP... ($retries/$maxRetries)"
+                  Start-Sleep -Seconds 5
+              }
+          }
+          
+          if (-not $tsIP) {
+              Write-Error "❌ فشل الحصول على عنوان IP"
+              exit 1
+          }
+          
+          echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
+          Write-Host "✅ عنوان Tailscale: $tsIP"
+
+
 
       - name: Establish Tailscale Connection
         run: |
