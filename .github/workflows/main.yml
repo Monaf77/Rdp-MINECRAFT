@@ -11,7 +11,7 @@ on:
         description: 'كلمة مرور RDP'
         required: true
         default: 'admin@123'
-
+ 
 jobs:
   setup-rdp:
     runs-on: windows-latest
