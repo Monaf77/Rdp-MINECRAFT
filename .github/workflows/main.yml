@@ -48,37 +48,96 @@ jobs:
         Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDPUser"
         Enable-LocalUser -Name "RDPUser"
 
-        # Store credentials
-        $creds = @{
-            username = "RDPUser"
-            password = $password
-            expiry = (Get-Date).AddMinutes(60).ToString("yyyy-MM-dd HH:mm:ss")
-        }
-        $creds | ConvertTo-Json | Out-File "rdp_creds.json"
-
     - name: Get Public IP
-      id: ip
-      uses: haythem/public-ip@v4
-      with:
-        ip_version: "v4"
-
-    - name: Start Web Interface
-      uses: actions/upload-artifact@v3
-      with:
-        name: rdp-info
-        path: rdp_creds.json
-      if: always()
+      id: get-ip
+      shell: powershell
+      run: |
+        # Get public IP using a different method
+        $ip = (Invoke-RestMethod -Uri "https://api.ipify.org?format=json").ip
+        echo "ip=$ip" >> $env:GITHUB_OUTPUT
 
     - name: Display Connection Info
+      shell: powershell
       run: |
-        echo "RDP Connection Information:"
-        echo "IP: ${{ steps.ip.outputs.ipv4 }}"
-        echo "Username: RDPUser"
-        echo "Password: ${{ github.event.inputs.password || 'P@ssw0rd123!' }}"
-        echo "Port: 3389"
-        echo "Session will expire in ${{ github.event.inputs.runtime_minutes || 60 }} minutes"
+        $ip = "${{ steps.get-ip.outputs.ip }}"
+        $password = "${{ github.event.inputs.password || 'P@ssw0rd123!' }}"
+        
+        Write-Host "=============================================="
+        Write-Host "RDP Connection Information:"
+        Write-Host "IP: $ip"
+        Write-Host "Username: RDPUser"
+        Write-Host "Password: $password"
+        Write-Host "Port: 3389"
+        Write-Host "Session will expire in ${{ github.event.inputs.runtime_minutes || 60 }} minutes"
+        Write-Host "=============================================="
+        
+        # Create RDP file
+        $rdpContent = @"
+screen mode id:i:2
+use multimon:i:0
+desktopwidth:i:1280
+desktopheight:i:800
+session bpp:i:32
+winposstr:s:0,1,0,0,800,600
+compression:i:1
+keyboardhook:i:2
+audiocapturemode:i:0
+videoplaybackmode:i:1
+connection type:i:7
+networkautodetect:i:1
+bandwidthautodetect:i:1
+displayconnectionbar:i:1
+enableworkspacereconnect:i:0
+disable wallpaper:i:0
+allow font smoothing:i:1
+allow desktop composition:i:0
+disable full window drag:i:1
+disable menu anims:i:1
+disable themes:i:0
+disable cursor setting:i:0
+bitmapcachepersistenable:i:1
+full address:s:$ip
+audiomode:i:0
+redirectprinters:i:1
+redirectcomports:i:0
+redirectsmartcards:i:1
+redirectclipboard:i:1
+redirectposdevices:i:0
+autoreconnection enabled:i:1
+authentication level:i:2
+prompt for credentials:i:0
+negotiate security layer:i:1
+remoteapplicationmode:i:0
+alternate shell:s:
+shell working directory:s:
+gatewayhostname:s:
+gatewayusagemethod:i:4
+gatewaycredentialssource:i:4
+gatewayprofileusagemethod:i:0
+promptcredentialonce:i:0
+use redirection server name:i:0
+"@
+
+        # Save RDP file
+        $rdpContent | Out-File -FilePath "connection.rdp" -Encoding ASCII
+        
+        # Output download link
+        $repo = "${{ github.repository }}"
+        $runId = "${{ github.run_id }}"
+        $downloadUrl = "https://github.com/$repo/actions/runs/$runId/artifacts"
+        Write-Host "Download RDP file: $downloadUrl"
+
+    - name: Upload RDP File
+      uses: actions/upload-artifact@v4
+      with:
+        name: rdp-connection
+        path: connection.rdp
+        retention-days: 1
 
     - name: Wait for session
+      shell: powershell
       run: |
         $minutes = ${{ github.event.inputs.runtime_minutes || 60 }}
+        Write-Host "RDP session will be available for $minutes minutes"
         Start-Sleep -Seconds ($minutes * 60)
+        Write-Host "RDP session has ended"
