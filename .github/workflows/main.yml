@@ -1,173 +1,82 @@
 name: RDP
-
 on:
   workflow_dispatch:
-
 jobs:
   secure-rdp:
     runs-on: windows-latest
     timeout-minutes: 3600
-
     steps:
-      - name: تكوين إعدادات RDP
+      - name: Configure Core RDP Settings
         run: |
-          # تفعيل RDP
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
-          
-          # تكوين إعدادات الأمان
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0 -Force
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "SecurityLayer" -Value 0 -Force
-          
-          # تمكين الاتصالات
-          New-Item -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services' -Force | Out-Null
-          Set-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services' -Name "fAllowUnsolicited" -Value 1 -Type DWord -Force
-          
-          # تكوين جدار الحماية
-          netsh advfirewall firewall delete rule name="RDP-Tailscale" | Out-Null
-          netsh advfirewall firewall add rule name="RDP-Tailscale" dir=in action=allow protocol=TCP localport=3389 | Out-Null
-          
-          # تمكين RDP في جدار الحماية
-          Set-NetFirewallRule -DisplayGroup "Remote Desktop" -Enabled True -Profile Any
-          
-          # إعادة تشغيل خدمة RDP
-          Restart-Service TermService -Force
-          Write-Host "✅ تم تكوين إعدادات RDP بنجاح"
+          netsh advfirewall firewall delete rule name="RDP-Tailscale"
+          netsh advfirewall firewall add rule name="RDP-Tailscale" dir=in action=allow protocol=TCP localport=3389
+          Restart-Service -Name TermService -Force
 
-      - name: إنشاء مستخدم RDP
+      - name: Create RDP User with Static Password
         run: |
           $password = "admin@123"
           $securePass = ConvertTo-SecureString $password -AsPlainText -Force
 
-          # حذف المستخدم إذا كان موجوداً
-          $userExists = Get-LocalUser -Name "TOOLBOXLAP" -ErrorAction SilentlyContinue
-          if ($userExists) {
-              Remove-LocalUser -Name "TOOLBOXLAP" -Confirm:$false
+          if (-not (Get-LocalUser -Name "TOOLBOXLAP" -ErrorAction SilentlyContinue)) {
+              New-LocalUser -Name "TOOLBOXLAP" -Password $securePass -AccountNeverExpires
           }
 
-          # إنشاء مستخدم جديد
-          New-LocalUser -Name "TOOLBOXLAP" -Password $securePass -AccountNeverExpires
           Add-LocalGroupMember -Group "Administrators" -Member "TOOLBOXLAP"
           Add-LocalGroupMember -Group "Remote Desktop Users" -Member "TOOLBOXLAP"
-          
-          # تمكين المستخدم
-          Enable-LocalUser -Name "TOOLBOXLAP"
-          
-          Write-Host "✅ تم إنشاء المستخدم TOOLBOXLAP بنجاح"
+
           echo "RDP_CREDS=User: TOOLBOXLAP | Password: $password" >> $env:GITHUB_ENV
 
-      - name: تثبيت Tailscale
-        shell: pwsh
-        run: |
-          # تنزيل Tailscale
-          $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi"
-          $installerPath = "$env:TEMP\tailscale.msi"
-          
-          Write-Host "جاري تحميل Tailscale..."
-          Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath -UseBasicParsing
-          
-          # تثبيت Tailscale
-          Write-Host "جاري التثبيت..."
-          $process = Start-Process -FilePath "msiexec.exe" -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait -PassThru -NoNewWindow
-          
-          if ($process.ExitCode -eq 0) {
-              Write-Host "✅ تم تثبيت Tailscale بنجاح"
-          } else {
-              Write-Error "❌ فشل التثبيت. كود الخروج: $($process.ExitCode)"
+          if (-not (Get-LocalUser -Name "TOOLBOXLAP")) {
+              Write-Error "User creation failed"
               exit 1
           }
-          
-          # تنظيف
-          Remove-Item $installerPath -Force -ErrorAction SilentlyContinue
 
-      - name: تكوين Tailscale
+      - name: Install Tailscale
         run: |
-          # إضافة المسار إلى متغيرات النظام
-          $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine")
-          
-          # تشغيل Tailscale
-          Write-Host "جاري تشغيل Tailscale..."
-          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-$env:GITHUB_RUN_ID --reset
-          
-          # الحصول على عنوان IP
+          $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
+          $installerPath = "$env:TEMP\tailscale.msi"
+
+          Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath
+          Start-Process msiexec.exe -ArgumentList "/i", ""$installerPath"", "/quiet", "/norestart" -Wait
+          Remove-Item $installerPath -Force
+
+      - name: Establish Tailscale Connection
+        run: |
+          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-$env:GITHUB_RUN_ID
           $tsIP = $null
           $retries = 0
-          $maxRetries = 10
-          
-          while (-not $tsIP -and $retries -lt $maxRetries) {
+          while (-not $tsIP -and $retries -lt 10) {
               $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
-              if (-not $tsIP) { $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -6 }
-              
-              if (-not $tsIP) {
-                  $retries++
-                  Write-Host "⏳ انتظار عنوان IP... ($retries/$maxRetries)"
-                  Start-Sleep -Seconds 5
-              }
+              Start-Sleep -Seconds 5
+              $retries++
           }
-          
           if (-not $tsIP) {
-              Write-Error "❌ فشل الحصول على عنوان IP"
+              Write-Error "Tailscale IP not assigned. Exiting."
               exit 1
           }
-          
           echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
-          Write-Host "✅ عنوان Tailscale: $tsIP"
 
-      - name: التحقق من الاتصال
+      - name: Verify RDP Accessibility
         run: |
-          $tsIP = $env:TAILSCALE_IP
-          Write-Host "`n=== فحص الاتصال ==="
-          
-          # فحص Ping
-          Write-Host "`nجاري فحص اتصال Ping..."
-          ping -n 3 $tsIP
-          
-          # فحص منفذ RDP
-          Write-Host "`nجاري فحص منفذ RDP..."
-          $tcpClient = New-Object System.Net.Sockets.TCPClient
-          try {
-              $connect = $tcpClient.BeginConnect($tsIP, 3389, $null, $null)
-              $success = $connect.AsyncWaitHandle.WaitOne(5000, $false)
-              if ($success) {
-                  Write-Host "✅ منفذ RDP مفتوح" -ForegroundColor Green
-                  $tcpClient.EndConnect($connect)
-              } else {
-                  Write-Host "❌ فشل الاتصال" -ForegroundColor Red
-              }
-          } catch {
-              Write-Host "❌ خطأ: $_" -ForegroundColor Red
-          } finally {
-              $tcpClient.Dispose()
+          Write-Host "Tailscale IP: $env:TAILSCALE_IP"
+          $testResult = Test-NetConnection -ComputerName $env:TAILSCALE_IP -Port 3389
+          if (-not $testResult.TcpTestSucceeded) {
+              Write-Error "TCP connection to RDP port 3389 failed"
+              exit 1
           }
+          Write-Host "TCP connectivity successful!"
 
-      - name: تشغيل الخادم
+      - name: Maintain Connection
         run: |
-          $tsIP = $env:TAILSCALE_IP
-          $retryCount = 0
-          $maxRetries = 5
-          
-          Write-Host "`n=== معلومات الاتصال ==="
-          Write-Host "العنوان: $tsIP"
-          Write-Host "المستخدم: TOOLBOXLAP"
-          Write-Host "كلمة المرور: admin@123"
-          Write-Host "====================="
-          
+          Write-Host "`n=== RDP ACCESS ==="
+          Write-Host "Address: $env:TAILSCALE_IP"
+          Write-Host "Username: TOOLBOXLAP"
+          Write-Host "Password: admin@123"
+          Write-Host "==================`n"
           while ($true) {
-              $connectionTest = Test-NetConnection -ComputerName $tsIP -Port 3389 -WarningAction SilentlyContinue
-              
-              if ($connectionTest.TcpTestSucceeded) {
-                  Write-Host "[$(Get-Date -Format 'HH:mm:ss')] ✅ RDP جاهز على: $tsIP" -ForegroundColor Green
-              } else {
-                  $retryCount++
-                  Write-Host "[$(Get-Date -Format 'HH:mm:ss')] ⚠️  محاولة $retryCount/$maxRetries..." -ForegroundColor Yellow
-                  
-                  if ($retryCount -ge $maxRetries) {
-                      Write-Host "إعادة تشغيل Tailscale..." -ForegroundColor Cyan
-                      & "$env:ProgramFiles\Tailscale\tailscale.exe" down
-                      Start-Sleep -Seconds 2
-                      & "$env:ProgramFiles\Tailscale\tailscale.exe" up --reset
-                      $retryCount = 0
-                  }
-              }
-              
-              Start-Sleep -Seconds 30
+              Write-Host "[$(Get-Date)] RDP Active - Use Ctrl+C in workflow to terminate"
+              Start-Sleep -Seconds 300
           }
